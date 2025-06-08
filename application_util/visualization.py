@@ -132,3 +132,66 @@ class Visualization(object):
             # self.viewer.gaussian(track.mean[:2], track.covariance[:2, :2],
             #                      label="%d" % track.track_id)
 #
+
+    def draw_trackers_ellipse(self, tracks):
+        self.viewer.thickness = 2
+        for track in tracks:
+            if not track.is_confirmed() or track.time_since_update > 0:
+                continue
+            self.viewer.color = create_unique_color_uchar(track.track_id)
+            
+            x, y, w, h = track.to_tlwh().astype(np.int32)
+            
+            # Feet position: bottom center of bbox
+            feet_x = x + w // 2
+            feet_y = y + h
+
+            
+            axis_length = (int(w), int(h * 0.15))
+            
+            # Angle: 0 means ellipse aligned with image axes
+            angle = 0
+            
+            # Draw the ellipse (thickness=-1 for filled, or any int for outline)
+            cv2.ellipse(
+                self.viewer.image,                # Image to draw on
+                (feet_x, feet_y),                 # Center of ellipse
+                axis_length,                      # Axes lengths
+                angle,                            # Angle of rotation
+                -45, 235,                           # Start and end angle
+                self.viewer.color,                # Color
+                self.viewer.thickness,             # Thickness
+                lineType=cv2.LINE_4             
+            )
+
+
+            # Draw track number under ellipse
+            label = str(track.track_id)
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            min_font_scale = 0.4
+            max_font_scale = 0.6
+
+            base_font_scale = h / 60.0  # 60 is an empirically chosen constant; tune as needed
+            font_scale = max(base_font_scale, min_font_scale)
+            if max_font_scale is not None:
+                font_scale = min(font_scale, max_font_scale)
+
+            #font_scale = 0.8
+            font_thickness = 1
+            label_size, _ = cv2.getTextSize(label, font, font_scale, font_thickness)
+            label_x = feet_x - label_size[0] // 2
+            #label_y = feet_y + axis_length[1] + label_size[1] + 6  # Just below the ellipse
+
+            offset = int(h * 0.1)  # adjust based on player size
+            label_y = y - offset
+
+            cv2.putText(
+                self.viewer.image,
+                label,
+                (label_x, label_y),
+                font,
+                font_scale,
+                self.viewer.color,
+                font_thickness,
+                cv2.LINE_AA
+            )

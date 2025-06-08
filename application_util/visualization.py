@@ -2,7 +2,7 @@
 import numpy as np
 import colorsys
 from .image_viewer import ImageViewer
-
+import cv2
 
 def create_unique_color_float(tag, hue_step=0.41):
     """Create a unique RGB color code for a given track id (tag).

@@ -66,8 +66,8 @@ class TeamAssigner:
         # self.team_colors[2] = kmeans.cluster_centers_[1]
 
         # manually assigned colours for now
-        self.team_colors[1] = np.array([0, 0, 255], dtype=np.float32)   # red
-        self.team_colors[2] = np.array([0, 0,   0], dtype=np.float32)   # black
+        self.team_colors[2] = np.array([0, 0, 255], dtype=np.float32)   # red
+        self.team_colors[1] = np.array([0, 0,   0], dtype=np.float32)   # black
 
     def get_player_team(self, frame, bbox, player_id):
         if player_id in self.player_team_dict:

@@ -13,7 +13,7 @@ from team_assigner.team_assigner import TeamAssigner
 VIDEO_PATH   = r"C:\Users\pfwin\Project Code\data\vids\fixed_left.mp4"
 YOLO_WEIGHTS = r"C:\Users\pfwin\Project Code\data processing\fine_tuned_run\train\weights\best.pt"
 PITCH_IMAGE  = r"C:\Users\pfwin\Project Code\homography\pitch.jpg"
-OUTPUT_VIDEO = r"C:\Users\pfwin\Project Code\data\vids\output.mp4"
+OUTPUT_VIDEO = r"C:\Users\pfwin\Project Code\data\vids\output_2.mp4"
 # Left‑half pitch template (metres)
 TEMPLATE = {
     0: (0, 0),    1: (0, 90),   2: (0, 41.75), 3: (0, 48.25),
@@ -37,7 +37,7 @@ PITCH_W_PX, PITCH_H_PX = 412, 253
 
 
 def collect_landmarks(video: Path):
-    """Interactively pick landmark correspondences on the first frame."""
+    
     cap = cv2.VideoCapture(str(video))
     ok, frame = cap.read()
     cap.release()
@@ -118,7 +118,7 @@ def overlay_image(
 
 
 def fit_homography(picked: dict[str, tuple[int, int]]):
-    """Estimate homography H: image pixel → metric template coordinates."""
+    
     img_pts, world_pts = [], []
     for n in LANDMARK_ORDER:
         if picked[n] is not None:
@@ -138,14 +138,14 @@ def fit_homography(picked: dict[str, tuple[int, int]]):
 def metric_to_pitch_px(x_m: float, y_m: float,
                        w_px: int = PITCH_W_PX, h_px: int = PITCH_H_PX,
                        w_m: float = PITCH_W_M, h_m: float = PITCH_H_M):
-    """Convert metric pitch coords → pixel coords on the pitch image."""
+    
     u = x_m / w_m * w_px
     v = (h_m - y_m) / h_m * h_px  # flip vertical axis
     return int(round(u)), int(round(v))
 
 
 def init_tracker():
-    """Initialise a DeepSORT tracker with Euclidean appearance metric."""
+    
     max_euclidean_distance = 0.7
     nn_budget = 100
     metric = nn_matching.NearestNeighborDistanceMetric(

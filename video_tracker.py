@@ -15,7 +15,7 @@ def main():
     dummy_feature = np.ones((1,), dtype=np.float32)
 
     # Video input path
-    video_path = r"C:\Users\pfwin\Project Code\data\vids\fixed_left.mp4"
+    video_path = r"C:\Users\pfwin\Project Code\data\vids\test_vid2.mp4"
     cap = cv2.VideoCapture(video_path)
 
     # YOLO model

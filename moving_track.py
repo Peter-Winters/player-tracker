@@ -15,7 +15,7 @@ VIDEO_PATH        = r"C:\Users\pfwin\Project Code\data\vids\test_vid2.mp4"
 PLAYER_WEIGHTS    = r"C:\Users\pfwin\Project Code\data processing\fine_tuned_run\train\weights\best.pt"
 PITCH_KP_WEIGHTS  = r"G:\My Drive\data\pitch_kpt_run\train2\weights\best.pt"
 PITCH_IMAGE       = r"C:\Users\pfwin\Project Code\homography\pitch.jpg"
-OUTPUT_VIDEO      = r"C:\Users\pfwin\Project Code\data\vids\moving_out.mp4"
+OUTPUT_VIDEO      = r"C:\Users\pfwin\Project Code\data\vids\testing.mp4"
 
 # ─── metric template in the model’s 19-keypoint order ─────────────────────────
 TEMPLATE_METRIC = np.array([
@@ -32,6 +32,7 @@ PITCH_W_PX, PITCH_H_PX = 412, 253
 
 # ─── parameters ───────────────────────────────────────────────────────────────
 HOMO_EVERY_N = 1          # recompute homography every N frames
+ALPHA_BLEND = 0.5         # blending factor for homography updates
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 def detect_pitch_keypoints(model: YOLO, frame: np.ndarray) -> np.ndarray | None:
@@ -45,8 +46,16 @@ def detect_pitch_keypoints(model: YOLO, frame: np.ndarray) -> np.ndarray | None:
     return kps[:TEMPLATE_METRIC.shape[0]]
 
 def fit_homography(src_pts_px: np.ndarray) -> np.ndarray | None:
-    H, _ = cv2.findHomography(src_pts_px, TEMPLATE_METRIC, cv2.RANSAC, 4.0, maxIters=5000)
+    H, _ = cv2.findHomography(src_pts_px, TEMPLATE_METRIC, cv2.RANSAC, 3.0, maxIters=10000)
     return H
+
+def blend_homography(H_old: np.ndarray, H_new: np.ndarray, val: float) -> np.ndarray:
+    # blend two homographies using a linear interpolation for a smoothing effect
+    if H_old is None:
+        return H_new
+    H_blend = (1 - val) * H_old + val * H_new
+    # renormalise so bottom-right element is 1
+    return H_blend / H_blend[2, 2]
 
 def metric_to_pitch_px(x_m, y_m,
                        w_px=PITCH_W_PX, h_px=PITCH_H_PX,
@@ -118,6 +127,7 @@ def main():
                 H_new = fit_homography(kps)
                 if H_new is not None:
                     H = H_new
+                    #H = blend_homography(H, H_new, ALPHA_BLEND) # blending between homographies
 
         # (2) player detections
         result = player_model(frame, verbose=False)[0]
@@ -132,7 +142,7 @@ def main():
         ]
 
         # (3) team-colour k-means init
-        if team_assigner.kmeans is None and len(detections) >= 5:
+        if team_assigner.kmeans is None and len(detections) >= 15:
             det_np = [[d.tlwh[0], d.tlwh[1], d.tlwh[2],
                        d.tlwh[3], 1.0, 0] for d in detections]
             team_assigner.assign_team_color(frame, det_np)
@@ -152,17 +162,21 @@ def main():
 
             team_id = team_assigner.get_player_team(frame, (x, y, w, h),
                                                     track.track_id)
-            colour = tuple(map(int, team_assigner.team_colors[team_id]))
+            colour = tuple(map(int, team_assigner.team_colors_bgr[team_id]))
+
+            colour_bbox = (int(x+(0.25*w)), int(y+(0.6*h)), int(x + (w*0.75)), int(y + (h*0.25)))
 
             cv2.rectangle(frame, (int(x), int(y)),
                           (int(x + w), int(y + h)), colour, 2)
+            cv2.rectangle(frame, (colour_bbox[0], colour_bbox[1]), 
+                          (colour_bbox[2], colour_bbox[3]), colour, 2)
             cv2.putText(frame, f"ID {track.track_id}",
                         (int(x), int(y) - 6),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 2)
 
             pitch_positions.append((foot[0], foot[1], team_id))
 
-        # (5) project to metric & draw on mini-pitch
+        # (5) project to metric & draw on 2d pitch
         if pitch_positions:
             pts_px = np.array([(p[0], p[1]) for p in pitch_positions],
                               np.float32).reshape(-1, 1, 2)
@@ -170,7 +184,7 @@ def main():
             for (x_m, y_m), (_, _, team_id) in zip(pts_m, pitch_positions):
                 u, v = metric_to_pitch_px(x_m, y_m)
                 if 0 <= u < PITCH_W_PX and 0 <= v < PITCH_H_PX:
-                    col = (0, 0, 255) if team_id == 2 else (0, 0, 0)
+                    col = (0,150,0) if team_id == 1 else (0,0,128)
                     cv2.circle(pitch_img, (u, v), 4, col, -1)
 
         # (6) composite & output
@@ -180,9 +194,9 @@ def main():
         frame_idx += 1
 
         # debugging window (optional):
-        # cv2.imshow("overlay", frame)
-        # if cv2.waitKey(1) & 0xFF == ord('q'):
-        #     break
+        cv2.imshow("overlay", frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
     cap.release(); out.release(); cv2.destroyAllWindows()
 

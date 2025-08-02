@@ -5,6 +5,7 @@ from deep_sort.detection import Detection
 from deep_sort import nn_matching
 from ultralytics import YOLO
 from application_util.visualization import Visualization
+from pathlib import Path
 
 def main():
     # DeepSORT config
@@ -15,12 +16,23 @@ def main():
     dummy_feature = np.ones((1,), dtype=np.float32)
 
     # Video input path
-    video_path = r"C:\Users\pfwin\Project Code\data\vids\test_vid2.mp4"
+    video_path = r"C:\Users\pfwin\Project Code\data\vids\2min.mp4"
     cap = cv2.VideoCapture(video_path)
 
     # YOLO model
     custom_model_path = r"C:\Users\pfwin\Project Code\data processing\fine_tuned_run\train\weights\best.pt"
     model = YOLO(custom_model_path)
+
+    # classification model
+    cls_model_path = r"G:\My Drive\bbox imgs\runs\classify\train\weights\best.pt"
+    cls_model = YOLO(cls_model_path)
+
+        
+    bbox_imgs_path = r"C:\Users\pfwin\Project Code\data\bbox imgs"###############################################
+
+    track_team = {}                     
+    COLOUR = {0: (0, 255, 0), # green
+            1: (0,   0,128)}  # maroon
 
     # Output setup
     ret, first_frame = cap.read()
@@ -44,6 +56,7 @@ def main():
     viz = Visualization(seq_info, update_ms=int(1000 / fps))
 
     frame_idx = 0
+
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -59,7 +72,14 @@ def main():
                 w = x2 - x1
                 h = y2 - y1
                 detections_np.append([x1, y1, w, h, conf])
+                # save bbox images
+                if bbox_imgs_path is not None:
+                    x1, y1, w, h = map(int, [x1, y1, w, h])
+                    crop = frame[y1:y1 + h, x1:x1 + w]
+                    img_name = f"{bbox_imgs_path}/frame_{frame_idx}_box_{len(detections_np)}.jpg"
+                    cv2.imwrite(img_name, crop)
 
+       
         detections = []
         for det in detections_np:
             x, y, w, h, conf = det
@@ -67,8 +87,22 @@ def main():
                 continue
             detections.append(Detection([x, y, w, h], conf, dummy_feature))
 
+        
         tracker.predict()
         tracker.update(detections)
+
+        for trk in tracker.tracks:
+            if not trk.is_confirmed() or trk.time_since_update: continue
+            tid = trk.track_id
+            x, y, w_box, h_box = map(int, trk.to_tlwh())
+
+            if tid not in track_team:                                      # classify once
+                crop = frame[y:y + h_box, x:x + w_box]
+                team_id = int(cls_model(crop, verbose=False)[0].probs.top1)
+                track_team[tid] = team_id
+
+            cv2.rectangle(frame, (x, y), (x + w_box, y + h_box),           # draw bbox
+                          COLOUR[track_team[tid]], 2)
 
         viz.set_image(frame)
         viz.draw_trackers_ellipse(tracker.tracks)

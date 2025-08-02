@@ -86,7 +86,12 @@ def main():
 
     tracker = init_tracker()
     dummy_feature = np.ones((1,), dtype=np.float32)
-    team_assigner = TeamAssigner()
+    #team_assigner = TeamAssigner()
+    team_palette = {
+    1: [ [6,29,16], [15,68,47], [8,22,14], [154,18,12]],   # green kit shades
+    2: [ [187,50,91], [43,15,21], [125,46,60], [80,25,22]]       # maroon kit shades
+    }
+    team_assigner = TeamAssigner(team_palette)
 
     # video I/O
     cap = cv2.VideoCapture(str(Path(VIDEO_PATH)))
@@ -141,11 +146,11 @@ def main():
             if cf >= 0.3 and cls != 2
         ]
 
-        # (3) team-colour k-means init
-        if team_assigner.kmeans is None and len(detections) >= 15:
-            det_np = [[d.tlwh[0], d.tlwh[1], d.tlwh[2],
-                       d.tlwh[3], 1.0, 0] for d in detections]
-            team_assigner.assign_team_color(frame, det_np)
+        # # (3) team-colour k-means init
+        # if team_assigner.kmeans is None and len(detections) >= 15:
+        #     det_np = [[d.tlwh[0], d.tlwh[1], d.tlwh[2],
+        #                d.tlwh[3], 1.0, 0] for d in detections]
+        #     team_assigner.assign_team_color(frame, det_np)
 
         # (4) DeepSORT update
         tracker.predict()
@@ -160,16 +165,19 @@ def main():
             x, y, w, h = track.to_tlwh()
             foot = (x + w / 2, y + h)
 
-            team_id = team_assigner.get_player_team(frame, (x, y, w, h),
-                                                    track.track_id)
-            colour = tuple(map(int, team_assigner.team_colors_bgr[team_id]))
+            # team_id = team_assigner.get_player_team(frame, (x, y, w, h),
+            #                                         track.track_id)
+            # colour = tuple(map(int, team_assigner.team_colors_bgr[team_id]))
 
-            colour_bbox = (int(x+(0.25*w)), int(y+(0.6*h)), int(x + (w*0.75)), int(y + (h*0.25)))
+            team_id = team_assigner.get_player_team(frame, (x, y, w, h), track.track_id)
+            colour  = tuple(map(int, team_assigner.team_colors_bgr[team_id]))
+
+            #colour_bbox = (int(x+(0.25*w)), int(y+(0.6*h)), int(x + (w*0.75)), int(y + (h*0.25)))
 
             cv2.rectangle(frame, (int(x), int(y)),
                           (int(x + w), int(y + h)), colour, 2)
-            cv2.rectangle(frame, (colour_bbox[0], colour_bbox[1]), 
-                          (colour_bbox[2], colour_bbox[3]), colour, 2)
+            # cv2.rectangle(frame, (colour_bbox[0], colour_bbox[1]), 
+            #               (colour_bbox[2], colour_bbox[3]), colour, 2)
             cv2.putText(frame, f"ID {track.track_id}",
                         (int(x), int(y) - 6),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 2)
@@ -184,7 +192,7 @@ def main():
             for (x_m, y_m), (_, _, team_id) in zip(pts_m, pitch_positions):
                 u, v = metric_to_pitch_px(x_m, y_m)
                 if 0 <= u < PITCH_W_PX and 0 <= v < PITCH_H_PX:
-                    col = (0,150,0) if team_id == 1 else (0,0,128)
+                    col = (0,150,0) if team_id == 2 else (0,0,128)
                     cv2.circle(pitch_img, (u, v), 4, col, -1)
 
         # (6) composite & output

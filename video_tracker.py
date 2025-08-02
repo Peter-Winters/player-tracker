@@ -24,11 +24,8 @@ def main():
     model = YOLO(custom_model_path)
 
     # classification model
-    cls_model_path = r"G:\My Drive\bbox imgs\runs\classify\train\weights\best.pt"
+    cls_model_path = r"G:\My Drive\train2\weights\best.pt"
     cls_model = YOLO(cls_model_path)
-
-        
-    bbox_imgs_path = r"C:\Users\pfwin\Project Code\data\bbox imgs"###############################################
 
     track_team = {}                     
     COLOUR = {0: (0, 255, 0), # green
@@ -72,12 +69,6 @@ def main():
                 w = x2 - x1
                 h = y2 - y1
                 detections_np.append([x1, y1, w, h, conf])
-                # save bbox images
-                if bbox_imgs_path is not None:
-                    x1, y1, w, h = map(int, [x1, y1, w, h])
-                    crop = frame[y1:y1 + h, x1:x1 + w]
-                    img_name = f"{bbox_imgs_path}/frame_{frame_idx}_box_{len(detections_np)}.jpg"
-                    cv2.imwrite(img_name, crop)
 
        
         detections = []

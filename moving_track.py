@@ -9,13 +9,18 @@ from deep_sort.detection import Detection
 from deep_sort import nn_matching
 
 from team_assigner.team_assigner import TeamAssigner
+from application_util.visualization import Visualization
 
 # ─── file paths ───────────────────────────────────────────────────────────────
-VIDEO_PATH        = r"C:\Users\pfwin\Project Code\data\vids\test_vid2.mp4"
+VIDEO_PATH        = r"C:\Users\pfwin\Project Code\data\vids\2min.mp4"
 PLAYER_WEIGHTS    = r"C:\Users\pfwin\Project Code\data processing\fine_tuned_run\train\weights\best.pt"
 PITCH_KP_WEIGHTS  = r"G:\My Drive\data\pitch_kpt_run\train2\weights\best.pt"
 PITCH_IMAGE       = r"C:\Users\pfwin\Project Code\homography\pitch.jpg"
-OUTPUT_VIDEO      = r"C:\Users\pfwin\Project Code\data\vids\testing.mp4"
+OUTPUT_VIDEO      = r"C:\Users\pfwin\Project Code\test_high_processing.mp4"
+
+# classification model
+cls_model_path = r"G:\My Drive\train2\weights\best.pt"
+cls_model = YOLO(cls_model_path)
 
 # ─── metric template in the model’s 19-keypoint order ─────────────────────────
 TEMPLATE_METRIC = np.array([
@@ -78,6 +83,20 @@ def init_tracker() -> Tracker:
     metric = nn_matching.NearestNeighborDistanceMetric("euclidean", 0.7, 100)
     return Tracker(metric)
 
+def safe_crop(im, x, y, w, h):
+    """Clamp box to image bounds and return None if it is empty."""
+    H, W, _ = im.shape
+
+    # round and clamp
+    x1 = max(0, int(round(x)))
+    y1 = max(0, int(round(y)))
+    x2 = min(W, int(round(x + w)))
+    y2 = min(H, int(round(y + h)))
+
+    if x2 - x1 < 2 or y2 - y1 < 2:      # too small → skip
+        return None
+    return im[y1:y2, x1:x2]
+
 # ─── main ─────────────────────────────────────────────────────────────────────
 def main():
     # models
@@ -92,6 +111,10 @@ def main():
     2: [ [187,50,91], [43,15,21], [125,46,60], [80,25,22]]       # maroon kit shades
     }
     team_assigner = TeamAssigner(team_palette)
+
+    track_team = {}                     
+    COLOUR = {0: (0, 150, 0), # green
+            1: (0,   0, 110)}  # maroon
 
     # video I/O
     cap = cv2.VideoCapture(str(Path(VIDEO_PATH)))
@@ -117,6 +140,15 @@ def main():
             H = fit_homography(kps)
 
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)             # rewind to start
+
+    # ── visualization setup ───────────────────────────────────────────────
+    seq_info = {
+        "sequence_name": "test_clip_video",
+        "image_size": (height, width),
+        "min_frame_idx": 0,
+        "max_frame_idx": int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) - 1
+    }
+    #viz = Visualization(seq_info, update_ms=int(1000 / fps))
 
     # ── main loop ───────────────────────────────────────────────────────────
     frame_idx = 0
@@ -164,23 +196,45 @@ def main():
                 continue
             x, y, w, h = track.to_tlwh()
             foot = (x + w / 2, y + h)
+            foot_x = int(x + w / 2)
+            foot_y = int(y + h)
+            tid = track.track_id
 
             # team_id = team_assigner.get_player_team(frame, (x, y, w, h),
             #                                         track.track_id)
             # colour = tuple(map(int, team_assigner.team_colors_bgr[team_id]))
 
-            team_id = team_assigner.get_player_team(frame, (x, y, w, h), track.track_id)
-            colour  = tuple(map(int, team_assigner.team_colors_bgr[team_id]))
+            # team_id = team_assigner.get_player_team(frame, (x, y, w, h), track.track_id)
+            # colour  = tuple(map(int, team_assigner.team_colors_bgr[team_id]))
 
             #colour_bbox = (int(x+(0.25*w)), int(y+(0.6*h)), int(x + (w*0.75)), int(y + (h*0.25)))
 
-            cv2.rectangle(frame, (int(x), int(y)),
-                          (int(x + w), int(y + h)), colour, 2)
-            # cv2.rectangle(frame, (colour_bbox[0], colour_bbox[1]), 
-            #               (colour_bbox[2], colour_bbox[3]), colour, 2)
-            cv2.putText(frame, f"ID {track.track_id}",
-                        (int(x), int(y) - 6),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 2)
+            #if tid not in track_team:                                      # classify once
+            crop = safe_crop(frame, x, y, w, h)
+            if crop is None:          # box too small or off-frame
+                continue
+
+            team_id = int(cls_model(crop, verbose=False)[0].probs.top1)
+            colour = COLOUR[team_id]
+
+            axes = (int(w), int(h * 0.15))       # (major, minor) radii
+            cv2.ellipse(frame,
+                (foot_x, foot_y),          # centre
+                axes,                      # axes lengths
+                0,                         # rotation angle
+                -45, 235,                    # full ellipse
+                colour, 2,
+                lineType=cv2.LINE_4)                 # colour & thickness
+
+            # cv2.rectangle(frame, (x, y), (x + w, y + h),           # draw bbox
+            #               colour, 2)
+            # cv2.rectangle(frame, (int(x), int(y)),
+            #               (int(x + w), int(y + h)), colour, 2)
+            # # cv2.rectangle(frame, (colour_bbox[0], colour_bbox[1]), 
+            # #               (colour_bbox[2], colour_bbox[3]), colour, 2)
+            # cv2.putText(frame, f"ID {track.track_id}",
+            #             (int(x), int(y) - 6),
+            #             cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 2)
 
             pitch_positions.append((foot[0], foot[1], team_id))
 
@@ -192,19 +246,24 @@ def main():
             for (x_m, y_m), (_, _, team_id) in zip(pts_m, pitch_positions):
                 u, v = metric_to_pitch_px(x_m, y_m)
                 if 0 <= u < PITCH_W_PX and 0 <= v < PITCH_H_PX:
-                    col = (0,150,0) if team_id == 2 else (0,0,128)
-                    cv2.circle(pitch_img, (u, v), 4, col, -1)
+                    # col = (0,150,0) if team_id == 1 else (0,0,128)
+                    cv2.circle(pitch_img, (u, v), 4, COLOUR[team_id], -1)
 
         # (6) composite & output
+        # viz.set_image(frame)
+        # viz.draw_trackers_ellipse(tracker.tracks)
         overlay_image(frame, pitch_img, ((width - PITCH_W_PX) // 2, 0))
         out.write(frame)
 
+
+        #out.write(viz.viewer.image)
+
         frame_idx += 1
 
-        # debugging window (optional):
-        cv2.imshow("overlay", frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+
+        # cv2.imshow("overlay", frame)
+        # if cv2.waitKey(1) & 0xFF == ord('q'):
+        #     break
 
     cap.release(); out.release(); cv2.destroyAllWindows()
 

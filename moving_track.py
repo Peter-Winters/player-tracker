@@ -8,15 +8,25 @@ from deep_sort.tracker import Tracker
 from deep_sort.detection import Detection
 from deep_sort import nn_matching
 
+from analytics_funcs import (
+    create_trajectory_store, add_frame, init_marker_state, marker_update_frame,
+    voronoi_cells_bounded, draw_voronoi_on_pitch, team_centroid_and_spread,
+    per_player_speed
+)
+
 # ─── file paths ───────────────────────────────────────────────────────────────
-VIDEO_PATH        = r"C:\Users\pfwin\Project Code\data\vids\2min.mp4"
+VIDEO_PATH        = r"data\vids\test1.mp4"
 PLAYER_WEIGHTS    = r"G:\My Drive\data\player_imgs\runs\detect\train4\weights\best.pt"
 PITCH_KP_WEIGHTS  = r"G:\My Drive\data\pitch_kpt_run\train2\weights\best.pt"
-PITCH_IMAGE       = r"C:\Users\pfwin\Project Code\homography\pitch.jpg"
-OUTPUT_VIDEO      = r"C:\Users\pfwin\Project Code\debugging.mp4"
+PITCH_IMAGE       = r"deep_sort\pitch.png"
+OUTPUT_VIDEO      = r"C:\Users\pfwin\Project Code\test1.mp4"
 
 # classification model
 cls_model_path = r"G:\My Drive\train2\weights\best.pt"
+
+
+store  = create_trajectory_store(25)
+marker = init_marker_state()
 
 # ─── metric template in the model’s 19-keypoint order ─────────────────────────
 TEMPLATE_METRIC = np.array([
@@ -48,18 +58,18 @@ def build_pitch_template(width_m: float,
     # Apply anisotropic scaling and preserve dtype
     return (template_ref * np.array([sx, sy], dtype=np.float32)).astype(np.float32)
 
-def detect_pitch_keypoints(model: YOLO, frame: np.ndarray) -> np.ndarray | None:
+def detect_pitch_keypoints(model: YOLO, frame: np.ndarray, template) -> np.ndarray | None:
     """Return (19,2) pixel coords or None if detection fails."""
     res = model(frame, verbose=False)
     if not res or res[0].keypoints is None:
         return None
     kps = res[0].keypoints.xy[0].cpu().numpy().astype(np.float32)
-    if kps.shape[0] < TEMPLATE_METRIC.shape[0]:
+    if kps.shape[0] < template.shape[0]:
         return None
-    return kps[:TEMPLATE_METRIC.shape[0]]
+    return kps[:template.shape[0]]
 
-def fit_homography(src_pts_px: np.ndarray) -> np.ndarray | None:
-    H, _ = cv2.findHomography(src_pts_px, TEMPLATE_METRIC, cv2.RANSAC, 3.0, maxIters=10000)
+def fit_homography(src_pts_px: np.ndarray, template) -> np.ndarray | None:
+    H, _ = cv2.findHomography(src_pts_px, template, cv2.RANSAC, 3.0, maxIters=10000)
     return H
 
 def metric_to_pitch_px(x_m, y_m,
@@ -97,6 +107,7 @@ def safe_crop(im, x, y, w, h):
         return None
     return im[y1:y2, x1:x2]
 
+
 # ─── main ─────────────────────────────────────────────────────────────────────
 def main():
     # models
@@ -107,8 +118,10 @@ def main():
     tracker = init_tracker()
     dummy_feature = np.ones((1,), dtype=np.float32)
                   
-    COLOUR = {0: (0, 150, 0), # green
-            1: (0,   0, 110)}  # maroon
+    COLOUR = {0: (0, 90, 0), # green
+            1: (0,   0, 60),  # maroon
+            2: (0, 140, 0), # light green
+            3: (0,   0, 120),}  # light maroon
 
     # video I/O
     cap = cv2.VideoCapture(str(Path(VIDEO_PATH)))
@@ -131,9 +144,9 @@ def main():
         ok, frame = cap.read()
         if not ok:
             raise RuntimeError("Could not find a frame with detectable key-points.")
-        kps = detect_pitch_keypoints(kp_model, frame)
+        kps = detect_pitch_keypoints(kp_model, frame, pitch_template)
         if kps is not None:
-            H = fit_homography(kps)
+            H = fit_homography(kps, pitch_template)
 
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)             # rewind to start
 
@@ -146,9 +159,9 @@ def main():
 
         # refresh homography periodically
         if frame_idx % HOMO_EVERY_N == 0:
-            kps = detect_pitch_keypoints(kp_model, frame)
+            kps = detect_pitch_keypoints(kp_model, frame, pitch_template)
             if kps is not None:
-                H_new = fit_homography(kps)
+                H_new = fit_homography(kps, pitch_template)
                 if H_new is not None:
                     H = H_new
 
@@ -193,7 +206,10 @@ def main():
                 0,                         # rotation angle
                 -45, 235,                  # full ellipse
                 colour, 2,                 # colour, thickness 
-                lineType=cv2.LINE_4)                 
+                lineType=cv2.LINE_4)       
+            # draw track id
+            cv2.putText(frame, str(track.track_id), (foot_x, foot_y - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 2)          
 
             pitch_positions.append((foot[0], foot[1], team_id))
 
@@ -205,7 +221,7 @@ def main():
             for (x_m, y_m), (_, _, team_id) in zip(pts_m, pitch_positions):
                 u, v = metric_to_pitch_px(x_m, y_m)
                 if 0 <= u < PITCH_W_PX and 0 <= v < PITCH_H_PX:
-                    cv2.circle(pitch_img, (u, v), 4, COLOUR[team_id], -1)
+                    cv2.circle(pitch_img, (u, v), 4, COLOUR[team_id+2], -1)
 
         # output
         overlay_image(frame, pitch_img, ((width - PITCH_W_PX) // 2, 0))
@@ -213,9 +229,9 @@ def main():
 
         frame_idx += 1
 
-        cv2.imshow("overlay", frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+        # cv2.imshow("overlay", frame)
+        # if cv2.waitKey(1) & 0xFF == ord('q'):
+        #     break
 
     cap.release(); out.release(); cv2.destroyAllWindows()
 

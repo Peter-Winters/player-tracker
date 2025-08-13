@@ -13,12 +13,13 @@ from collections import defaultdict, deque
 # ─── file paths ───────────────────────────────────────────────────────────────
 VIDEO_PATH        = r"data\vids\clip3.mp4"
 OUTPUT_VIDEO      = r"C:\Users\pfwin\Project Code\clip3__.mp4"
+
 PLAYER_WEIGHTS    = r"G:\My Drive\data\player_imgs\runs\detect\train4\weights\best.pt"
 PITCH_KP_WEIGHTS  = r"G:\My Drive\data\pitch_kpt_run\train2\weights\best.pt"
+CLASSIFIER_WEIGHTS = r"G:\My Drive\train2\weights\best.pt"
+
 PITCH_IMAGE       = r"deep_sort\pitch.png"
 
-# classification model
-cls_model_path = r"G:\My Drive\train2\weights\best.pt"
 
 # ─── metric template in the model’s 19-keypoint order ─────────────────────────
 TEMPLATE_METRIC = np.array([
@@ -110,7 +111,7 @@ def main():
     # models
     player_model = YOLO(PLAYER_WEIGHTS)
     kp_model     = YOLO(PITCH_KP_WEIGHTS)
-    cls_model = YOLO(cls_model_path)
+    cls_model = YOLO(CLASSIFIER_WEIGHTS)
 
     tracker = init_tracker()
     dummy_feature = np.ones((1,), dtype=np.float32)
@@ -165,6 +166,9 @@ def main():
             if kps is not None:
                 H_new = fit_homography(kps, pitch_template)
                 if H_new is not None:
+                    if big_h_jump(H, H_new):
+                        foot_trails_world.clear()
+                        pitch_trails_px.clear()
                     H = H_new
 
         # player detections
@@ -214,19 +218,6 @@ def main():
                 lineType=cv2.LINE_4)       
 
         trail_overlay = np.zeros_like(frame, dtype=np.uint8)
-        # for tid, pts in foot_trails_px.items():
-        #     if len(pts) < 2:
-        #         continue
-        #     base_col = COLOUR.get(track_team.get(tid, 0), (255, 255, 255))
-        #     n = len(pts)
-        #     for i in range(1, n):
-        #         a = i / n  # older segments are fainter
-        #         col = (int(base_col[0]*a), int(base_col[1]*a), int(base_col[2]*a))
-        #         cv2.line(trail_overlay, pts[i-1], pts[i], col, 1, lineType=cv2.LINE_AA)
-
-            # # blend once
-            # cv2.addWeighted(trail_overlay, 1.0, frame, 1.0, 0, frame)
-
 
         # project to metric & draw on 2d pitch
         if pitch_positions:

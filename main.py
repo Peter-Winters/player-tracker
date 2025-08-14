@@ -106,28 +106,14 @@ def big_h_jump(H_prev, H_cur, thr=0.12):
     A = H_prev / H_prev[2,2]; B = H_cur / H_cur[2,2]
     return np.linalg.norm(A - B, ord='fro') > thr
 
-def _interp_nans(y):  # ADDED: linear gap-fill on NaNs
-    y = y.copy()
-    n = len(y)
-    idx = np.arange(n)
-    mask = np.isfinite(y)
-    if mask.sum() == 0:
-        return y
-    # fill leading/trailing with nearest finite
-    first = np.flatnonzero(mask)[0]; last = np.flatnonzero(mask)[-1]
-    y[:first] = y[first]; y[last+1:] = y[last]
-    # fill interior via linear interpolation
-    y[~mask] = np.interp(idx[~mask], idx[mask], y[mask])
-    return y
-
-def _gaussian_kernel(win=7, sigma=2.0):  # ADDED
+def _gaussian_kernel(win=7, sigma=2.0):
     r = win//2
     x = np.arange(-r, r+1, dtype=np.float32)
     k = np.exp(-0.5*(x/sigma)**2)
     k /= k.sum()
     return k
 
-def _gaussian_smooth(y, win=7, sigma=2.0):  # ADDED
+def _gaussian_smooth(y, win=7, sigma=2.0):
     k = _gaussian_kernel(win, sigma)
     ypad = np.pad(y, (win//2,), mode='edge')
     ys = np.convolve(ypad, k, mode='valid')

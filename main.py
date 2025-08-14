@@ -11,12 +11,12 @@ from deep_sort import nn_matching
 from collections import defaultdict, deque
 
 # ─── file paths ───────────────────────────────────────────────────────────────
-VIDEO_PATH        = r"data\vids\clip3.mp4"
-OUTPUT_VIDEO      = r"C:\Users\pfwin\Project Code\clip3__.mp4"
+VIDEO_PATH        = r"play3.mp4"
+OUTPUT_VIDEO      = r"\kickout_analysis.mp4"
 
-PLAYER_WEIGHTS    = r"G:\My Drive\data\player_imgs\runs\detect\train4\weights\best.pt"
-PITCH_KP_WEIGHTS  = r"G:\My Drive\data\pitch_kpt_run\train2\weights\best.pt"
-CLASSIFIER_WEIGHTS = r"G:\My Drive\train2\weights\best.pt"
+PLAYER_WEIGHTS    = r"models\player_detector.pt"
+PITCH_KP_WEIGHTS  = r"models\pitch_keypoint_detector.pt"
+CLASSIFIER_WEIGHTS = r"models\team_classifier.pt"
 
 PITCH_IMAGE       = r"deep_sort\pitch.png"
 
@@ -35,7 +35,7 @@ PITCH_W_M, PITCH_H_M = 145.0, 85.0
 PITCH_W_PX, PITCH_H_PX = 412, 253
 
 HOMO_EVERY_N = 1          # refresh homography every N frames
-TAIL_LEN = 70  # keep last ~40 positions
+TAIL_LEN = 120  # keep last ~40 positions
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 def build_pitch_template(width_m: float,
@@ -106,6 +106,33 @@ def big_h_jump(H_prev, H_cur, thr=0.12):
     A = H_prev / H_prev[2,2]; B = H_cur / H_cur[2,2]
     return np.linalg.norm(A - B, ord='fro') > thr
 
+def _interp_nans(y):  # ADDED: linear gap-fill on NaNs
+    y = y.copy()
+    n = len(y)
+    idx = np.arange(n)
+    mask = np.isfinite(y)
+    if mask.sum() == 0:
+        return y
+    # fill leading/trailing with nearest finite
+    first = np.flatnonzero(mask)[0]; last = np.flatnonzero(mask)[-1]
+    y[:first] = y[first]; y[last+1:] = y[last]
+    # fill interior via linear interpolation
+    y[~mask] = np.interp(idx[~mask], idx[mask], y[mask])
+    return y
+
+def _gaussian_kernel(win=7, sigma=2.0):  # ADDED
+    r = win//2
+    x = np.arange(-r, r+1, dtype=np.float32)
+    k = np.exp(-0.5*(x/sigma)**2)
+    k /= k.sum()
+    return k
+
+def _gaussian_smooth(y, win=7, sigma=2.0):  # ADDED
+    k = _gaussian_kernel(win, sigma)
+    ypad = np.pad(y, (win//2,), mode='edge')
+    ys = np.convolve(ypad, k, mode='valid')
+    return ys
+
 # ─── main ─────────────────────────────────────────────────────────────────────
 def main():
     # models
@@ -166,9 +193,9 @@ def main():
             if kps is not None:
                 H_new = fit_homography(kps, pitch_template)
                 if H_new is not None:
-                    if big_h_jump(H, H_new):
-                        foot_trails_world.clear()
-                        pitch_trails_px.clear()
+                    # if big_h_jump(H, H_new):
+                    #     foot_trails_world.clear()
+                    #     pitch_trails_px.clear()
                     H = H_new
 
         # player detections
@@ -180,7 +207,7 @@ def main():
         detections = [
             Detection([x1, y1, x2 - x1, y2 - y1], cf, dummy_feature)
             for (x1, y1, x2, y2), cf, cls in zip(boxes, confs, clss)
-            if cf >= 0.3 and cls != 2
+            if cf >= 0.3 and cls != 2 and cls != 0
         ]
 
         # DeepSORT update
@@ -197,7 +224,6 @@ def main():
             foot = (x + w / 2, y + h)
             foot_x = int(x + w / 2)
             foot_y = int(y + h)
-
             crop = safe_crop(frame, x, y, w, h)
             if crop is None:          # box too small or off-frame
                 continue
@@ -244,7 +270,7 @@ def main():
             team_id = track_team.get(tid, 0)
             base_col = COLOUR.get(team_id + 2, (200, 200, 200))
 
-            # optional fading
+            # fading
             for i in range(1, len(pts)):
                 a = i / len(pts)  # older segments fainter
                 col = (int(base_col[0]*a), int(base_col[1]*a), int(base_col[2]*a))
@@ -276,7 +302,7 @@ def main():
                     x1 = max(0, min(x1, width-1)); y1 = max(0, min(y1, height-1))
                     x2 = max(0, min(x2, width-1)); y2 = max(0, min(y2, height-1))
 
-                    cv2.line(trail_overlay, (x1, y1), (x2, y2), col, 1, lineType=cv2.LINE_AA)
+                    cv2.line(trail_overlay, (x1, y1), (x2, y2), col, 2, lineType=cv2.LINE_AA)
 
         # single blend after drawing all trails
         cv2.addWeighted(trail_overlay, 1.0, frame, 1.0, 0, frame)

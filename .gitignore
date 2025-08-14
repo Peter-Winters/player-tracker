@@ -91,3 +91,6 @@ ENV/
 # video files
 *.mp4
 *.avi
+
+# models
+*.pt

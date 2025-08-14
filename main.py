@@ -101,10 +101,6 @@ def safe_crop(im, x, y, w, h):
         return None
     return im[y1:y2, x1:x2]
 
-def big_h_jump(H_prev, H_cur, thr=0.12):
-    if H_prev is None or H_cur is None: return False
-    A = H_prev / H_prev[2,2]; B = H_cur / H_cur[2,2]
-    return np.linalg.norm(A - B, ord='fro') > thr
 
 # ─── main ─────────────────────────────────────────────────────────────────────
 def main():
@@ -116,7 +112,6 @@ def main():
     tracker = init_tracker()
     dummy_feature = np.ones((1,), dtype=np.float32)
 
-    foot_trails_px  = defaultdict(lambda: deque(maxlen=TAIL_LEN))  # broadcast view
     pitch_trails_px = defaultdict(lambda: deque(maxlen=TAIL_LEN))  # 2D pitch view
     foot_trails_world = defaultdict(lambda: deque(maxlen=TAIL_LEN)) # world coordinates (deal with cam movement)
     track_team      = {}  # remember each track's last seen team colour (0/1)
@@ -166,9 +161,6 @@ def main():
             if kps is not None:
                 H_new = fit_homography(kps, pitch_template)
                 if H_new is not None:
-                    # if big_h_jump(H, H_new):
-                    #     foot_trails_world.clear()
-                    #     pitch_trails_px.clear()
                     H = H_new
 
         # player detections

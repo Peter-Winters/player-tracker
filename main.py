@@ -11,15 +11,14 @@ from deep_sort import nn_matching
 from collections import defaultdict, deque
 
 # ─── file paths ───────────────────────────────────────────────────────────────
-VIDEO_PATH        = r"play3.mp4"
-OUTPUT_VIDEO      = r"\kickout_analysis.mp4"
+VIDEO_PATH        = "play3.mp4"
+OUTPUT_VIDEO      = "kickout_analysis.mp4"
 
-PLAYER_WEIGHTS    = r"models\player_detector.pt"
-PITCH_KP_WEIGHTS  = r"models\pitch_keypoint_detector.pt"
-CLASSIFIER_WEIGHTS = r"models\team_classifier.pt"
+PLAYER_WEIGHTS    = "models\\player_detector.pt"
+PITCH_KP_WEIGHTS  = "models\\pitch_keypoint_detector.pt"
+CLASSIFIER_WEIGHTS = "models\\team_classifier.pt"
 
-PITCH_IMAGE       = r"deep_sort\pitch.png"
-
+PITCH_IMAGE       = "pitch.png"
 
 # ─── metric template in the model’s 19-keypoint order ─────────────────────────
 TEMPLATE_METRIC = np.array([
@@ -101,6 +100,41 @@ def safe_crop(im, x, y, w, h):
         return None
     return im[y1:y2, x1:x2]
 
+def _build_heatmap_image(points_uv, width, height, sigma=17, colormap=cv2.COLORMAP_TURBO):
+    """
+    points_uv: list of (u, v) pitch-pixel coords
+    returns BGR heatmap image (H x W x 3) with zeros where there is no density
+    """
+    heat = np.zeros((height, width), dtype=np.float32)
+    if not points_uv:
+        return np.zeros((height, width, 3), dtype=np.uint8)
+
+    # accumulate hits
+    for u, v in points_uv:
+        if 0 <= u < width and 0 <= v < height:
+            heat[v, u] += 1.0
+
+    # smooth & normalize
+    heat = cv2.GaussianBlur(heat, (0, 0), sigmaX=sigma, sigmaY=sigma)
+    if heat.max() > 0:
+        heat_norm = (heat / heat.max() * 255).astype(np.uint8)
+    else:
+        heat_norm = heat.astype(np.uint8)
+
+    # colorize (prebuilt OpenCV colormap)
+    heat_color = cv2.applyColorMap(heat_norm, colormap)
+
+    # zero out areas with no density so blend doesn't tint whole image
+    heat_color[heat_norm == 0] = 0
+    return heat_color
+
+def _overlay_heatmap_on_pitch(pitch_img_bgr, heat_bgr, alpha=0.65):
+    """Blend heat over pitch only where heat != 0."""
+    out = pitch_img_bgr.copy()
+    mask = (heat_bgr[:,:,0] + heat_bgr[:,:,1] + heat_bgr[:,:,2]) > 0
+    out[mask] = cv2.addWeighted(pitch_img_bgr[mask], 1 - alpha, heat_bgr[mask], alpha, 0)
+    return out
+
 
 # ─── main ─────────────────────────────────────────────────────────────────────
 def main():
@@ -147,6 +181,9 @@ def main():
             H = fit_homography(kps, pitch_template)
 
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)             # rewind to start
+
+    all_pitch_points = []                # [(u, v)]
+    team_pitch_points = defaultdict(list)  # team_id -> [(u, v)]
 
     # ── main loop ───────────────────────────────────────────────────────────
     frame_idx = 0
@@ -226,6 +263,8 @@ def main():
                     cv2.circle(pitch_img, (u, v), 4, COLOUR[team_id+2], -1)
                 # store for tail
                 pitch_trails_px[track_id].append((u, v))
+                all_pitch_points.append((u, v))
+                team_pitch_points[team_id].append((u, v))
 
         trail_overlay = np.zeros_like(frame, dtype=np.uint8)
 
@@ -281,6 +320,32 @@ def main():
         cv2.imshow("overlay", frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
+
+    try:
+        # overall heatmap
+        heat_all = _build_heatmap_image(all_pitch_points, PITCH_W_PX, PITCH_H_PX, sigma=17, colormap=cv2.COLORMAP_TURBO)
+        heat_all_over = _overlay_heatmap_on_pitch(pitch_base, heat_all, alpha=0.65)
+
+        base = Path(OUTPUT_VIDEO)
+        out_dir = base.parent
+        stem = base.stem
+
+        overall_path = out_dir / f"{stem}_heatmap_all.png"
+        cv2.imwrite(str(overall_path), heat_all_over)
+
+        # per-team heatmaps
+        for team_id, pts in team_pitch_points.items():
+            if not pts:
+                continue
+            heat_t = _build_heatmap_image(pts, PITCH_W_PX, PITCH_H_PX, sigma=17, colormap=cv2.COLORMAP_TURBO)
+            heat_t_over = _overlay_heatmap_on_pitch(pitch_base, heat_t, alpha=0.65)
+            team_path = out_dir / f"{stem}_heatmap_team{team_id}.png"
+            cv2.imwrite(str(team_path), heat_t_over)
+
+        print(f"[heatmap] saved: {overall_path}")
+    except Exception as e:
+        print(f"[heatmap] skipped due to error: {e}")
+
 
     cap.release(); out.release(); cv2.destroyAllWindows()
 

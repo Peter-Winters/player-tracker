@@ -12,13 +12,13 @@ from collections import defaultdict, deque
 
 # ─── file paths ───────────────────────────────────────────────────────────────
 VIDEO_PATH        = "play3.mp4"
-OUTPUT_VIDEO      = "kickout_analysis.mp4"
+OUTPUT_VIDEO      = "test\\kickout_analysis.mp4"
 
 PLAYER_WEIGHTS    = "models\\player_detector.pt"
 PITCH_KP_WEIGHTS  = "models\\pitch_keypoint_detector.pt"
 CLASSIFIER_WEIGHTS = "models\\team_classifier.pt"
 
-PITCH_IMAGE       = "pitch.png"
+PITCH_IMAGE       = "pitch_new.png"
 
 # ─── metric template in the model’s 19-keypoint order ─────────────────────────
 TEMPLATE_METRIC = np.array([
@@ -31,10 +31,11 @@ TEMPLATE_METRIC = np.array([
 
 # ─── pitch & template image sizes ─────────────────────────────────────────────
 PITCH_W_M, PITCH_H_M = 145.0, 85.0
-PITCH_W_PX, PITCH_H_PX = 412, 253
+#PITCH_W_PX, PITCH_H_PX = 412, 253
+PITCH_W_PX, PITCH_H_PX = 618, 380
 
 HOMO_EVERY_N = 1          # refresh homography every N frames
-TAIL_LEN = 120  # keep last ~40 positions
+TAIL_LEN = 120  # keep last 120 positions
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 def build_pitch_template(width_m: float,
@@ -73,14 +74,19 @@ def metric_to_pitch_px(x_m, y_m,
     return int(round(u)), int(round(v))
 
 def overlay_image(background: np.ndarray, overlay: np.ndarray,
-                  top_left: tuple[int, int] = (0, 0)) -> None:
-    x, y = top_left; h, w = overlay.shape[:2]
+                  top_left: tuple[int, int] = (0, 0),
+                  opacity: float = 1.0) -> None:
+    x, y = top_left
+    h, w = overlay.shape[:2]
     roi = background[y:y+h, x:x+w]
-    if overlay.shape[2] == 4:                       # BGRA
-        alpha = overlay[:, :, 3:4] / 255.0
-        roi[:] = (alpha * overlay[:, :, :3] + (1 - alpha) * roi).astype(np.uint8)
-    else:                                           # BGR
-        roi[:] = overlay
+
+    if overlay.shape[2] == 4:  # BGRA with per-pixel alpha
+        # scale existing alpha by requested opacity
+        alpha = (overlay[:, :, 3:4].astype(np.float32) / 255.0) * float(opacity)
+        roi[:] = (alpha * overlay[:, :, :3].astype(np.float32) +
+                  (1.0 - alpha) * roi.astype(np.float32)).astype(np.uint8)
+    else:  # BGR: uniform opacity
+        cv2.addWeighted(roi, 1.0 - float(opacity), overlay, float(opacity), 0, dst=roi)
 
 def init_tracker() -> Tracker:
     metric = nn_matching.NearestNeighborDistanceMetric("euclidean", 0.7, 100)
@@ -216,7 +222,10 @@ def main():
         tracker.predict()
         tracker.update(detections)
 
-        pitch_img = pitch_base.copy()
+        # pitch_img = pitch_base.copy()
+        pitch_bg = pitch_base                    # just the pitch image
+        pitch_draw_bgr  = np.zeros_like(pitch_base)                       # where we draw lines/dots
+        pitch_draw_mask = np.zeros((PITCH_H_PX, PITCH_W_PX), np.uint8)    # alpha mask for drawings
         pitch_positions = []     # (x_px, y_px, team_id, track_id)
 
         for track in tracker.tracks:
@@ -232,7 +241,6 @@ def main():
 
             team_id = int(cls_model(crop, verbose=False)[0].probs.top1)
             track_team[track.track_id] = team_id
-            #foot_trails_px[track.track_id].append((foot_x, foot_y))
             pitch_positions.append((foot[0], foot[1], team_id, track.track_id)) # (x_px, y_px, team_id, track_id)
             colour = COLOUR[team_id]
 
@@ -260,13 +268,14 @@ def main():
                 foot_trails_world[track_id].append((float(x_m), float(y_m)))
                 u, v = metric_to_pitch_px(x_m, y_m)
                 if 0 <= u < PITCH_W_PX and 0 <= v < PITCH_H_PX:
-                    cv2.circle(pitch_img, (u, v), 4, COLOUR[team_id+2], -1)
+ 
+                    cv2.circle(pitch_draw_bgr,  (u, v), 6, COLOUR[team_id+2], -1)
+                    cv2.circle(pitch_draw_mask, (u, v), 6, 255, -1)
+
                 # store for tail
                 pitch_trails_px[track_id].append((u, v))
                 all_pitch_points.append((u, v))
                 team_pitch_points[team_id].append((u, v))
-
-        trail_overlay = np.zeros_like(frame, dtype=np.uint8)
 
         for tid, pts in pitch_trails_px.items():
             if len(pts) < 2:
@@ -278,7 +287,9 @@ def main():
             for i in range(1, len(pts)):
                 a = i / len(pts)  # older segments fainter
                 col = (int(base_col[0]*a), int(base_col[1]*a), int(base_col[2]*a))
-                cv2.line(pitch_img, pts[i-1], pts[i], col, 1, lineType=cv2.LINE_AA)
+
+                cv2.line(pitch_draw_bgr,  pts[i-1], pts[i], col, 2, lineType=cv2.LINE_AA)
+                cv2.line(pitch_draw_mask, pts[i-1], pts[i], 255, 2, lineType=cv2.LINE_AA)
 
         H_inv = None if H is None else np.linalg.inv(H)
 
@@ -312,7 +323,19 @@ def main():
         cv2.addWeighted(trail_overlay, 1.0, frame, 1.0, 0, frame)
 
         # output
-        overlay_image(frame, pitch_img, ((width - PITCH_W_PX) // 2, 0))
+
+        # make a BGRA image from the drawing layer using the mask
+        pitch_draw_bgra = cv2.cvtColor(pitch_draw_bgr, cv2.COLOR_BGR2BGRA)
+        pitch_draw_bgra[:, :, 3] = pitch_draw_mask
+
+        panel_pos = ((width - PITCH_W_PX) // 2, 0)
+
+        # fade only the pitch background
+        overlay_image(frame, pitch_bg, panel_pos, opacity=0.65)
+
+        # paste graphics (dots/trails) at full opacity
+        overlay_image(frame, pitch_draw_bgra, panel_pos, opacity=1.0)
+
         out.write(frame)
 
         frame_idx += 1
@@ -323,7 +346,7 @@ def main():
 
     try:
         # overall heatmap
-        heat_all = _build_heatmap_image(all_pitch_points, PITCH_W_PX, PITCH_H_PX, sigma=17, colormap=cv2.COLORMAP_TURBO)
+        heat_all = _build_heatmap_image(all_pitch_points, PITCH_W_PX, PITCH_H_PX, sigma=9, colormap=cv2.COLORMAP_TURBO)
         heat_all_over = _overlay_heatmap_on_pitch(pitch_base, heat_all, alpha=0.65)
 
         base = Path(OUTPUT_VIDEO)
@@ -337,7 +360,7 @@ def main():
         for team_id, pts in team_pitch_points.items():
             if not pts:
                 continue
-            heat_t = _build_heatmap_image(pts, PITCH_W_PX, PITCH_H_PX, sigma=17, colormap=cv2.COLORMAP_TURBO)
+            heat_t = _build_heatmap_image(pts, PITCH_W_PX, PITCH_H_PX, sigma=9, colormap=cv2.COLORMAP_TURBO)
             heat_t_over = _overlay_heatmap_on_pitch(pitch_base, heat_t, alpha=0.65)
             team_path = out_dir / f"{stem}_heatmap_team{team_id}.png"
             cv2.imwrite(str(team_path), heat_t_over)

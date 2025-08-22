@@ -11,14 +11,14 @@ from deep_sort import nn_matching
 from collections import defaultdict, deque
 
 # ─── file paths ───────────────────────────────────────────────────────────────
-VIDEO_PATH        = "play3.mp4"
-OUTPUT_VIDEO      = "test\\kickout_analysis.mp4"
+VIDEO_PATH        = "clip5.mp4"
+OUTPUT_VIDEO      = "out\\clip5_analysis.mp4"
 
 PLAYER_WEIGHTS    = "models\\player_detector.pt"
 PITCH_KP_WEIGHTS  = "models\\pitch_keypoint_detector.pt"
 CLASSIFIER_WEIGHTS = "models\\team_classifier.pt"
 
-PITCH_IMAGE       = "pitch_new.png"
+PITCH_IMAGE       = "pitch.png"
 
 # ─── metric template in the model’s 19-keypoint order ─────────────────────────
 TEMPLATE_METRIC = np.array([
@@ -198,6 +198,8 @@ def main():
         if not ok:
             break
 
+        valid_H = False
+
         # refresh homography periodically
         if frame_idx % HOMO_EVERY_N == 0:
             kps = detect_pitch_keypoints(kp_model, frame, pitch_template)
@@ -205,6 +207,7 @@ def main():
                 H_new = fit_homography(kps, pitch_template)
                 if H_new is not None:
                     H = H_new
+                    valid_H = True
 
         # player detections
         result = player_model(frame, verbose=False)[0]
@@ -222,10 +225,22 @@ def main():
         tracker.predict()
         tracker.update(detections)
 
-        # pitch_img = pitch_base.copy()
-        pitch_bg = pitch_base                    # just the pitch image
-        pitch_draw_bgr  = np.zeros_like(pitch_base)                       # where we draw lines/dots
-        pitch_draw_mask = np.zeros((PITCH_H_PX, PITCH_W_PX), np.uint8)    # alpha mask for drawings
+        # Remove trails for tracks that no longer exist
+        active_ids = {t.track_id for t in tracker.tracks}  # current DeepSORT tracks
+
+        for store in (pitch_trails_px, foot_trails_world):
+            for tid in list(store.keys()):
+                if tid not in active_ids:
+                    store.pop(tid, None)
+
+        for tid in list(track_team.keys()):
+            if tid not in active_ids:
+                track_team.pop(tid, None)
+
+        pitch_bg = pitch_base                    # pitch image
+        minimap_draw_bgr  = np.zeros_like(pitch_base, dtype=np.uint8)           # colors of dots/trails
+        minimap_alpha     = np.zeros((PITCH_H_PX, PITCH_W_PX), dtype=np.uint8)   # per-pixel alpha for dots/trails
+
         pitch_positions = []     # (x_px, y_px, team_id, track_id)
 
         for track in tracker.tracks:
@@ -254,87 +269,100 @@ def main():
                 lineType=cv2.LINE_4)       
 
         trail_overlay = np.zeros_like(frame, dtype=np.uint8)
+        current_minimap_dots = []  # (u, v, team_id)
 
-        # project to metric & draw on 2d pitch
-        if pitch_positions:
-            pts_px = np.array([(p[0], p[1]) for p in pitch_positions],
-                              np.float32).reshape(-1, 1, 2)
-            pts_m  = cv2.perspectiveTransform(pts_px, H).reshape(-1, 2)
+        if valid_H:
+            # project to metric & draw on 2d pitch
+            if pitch_positions:
+                pts_px = np.array([(p[0], p[1]) for p in pitch_positions],
+                                np.float32).reshape(-1, 1, 2)
+                pts_m  = cv2.perspectiveTransform(pts_px, H).reshape(-1, 2)
 
-            for (x_m, y_m), (_, _, team_id, track_id) in zip(pts_m, pitch_positions):
-                # guard bad homographies
-                if not np.isfinite(x_m) or not np.isfinite(y_m):
+                for (x_m, y_m), (_, _, team_id, track_id) in zip(pts_m, pitch_positions):
+                    # guard bad homographies
+                    if not np.isfinite(x_m) or not np.isfinite(y_m):
+                        continue
+                    foot_trails_world[track_id].append((float(x_m), float(y_m)))
+                    u, v = metric_to_pitch_px(x_m, y_m)
+                    if 0 <= u < PITCH_W_PX and 0 <= v < PITCH_H_PX:
+    
+                        current_minimap_dots.append((u, v, team_id)) # save positions for current frame
+
+
+                    # store for tail
+                    pitch_trails_px[track_id].append((u, v))
+                    all_pitch_points.append((u, v))
+                    team_pitch_points[team_id].append((u, v))
+                
+            H_inv = None if H is None else np.linalg.inv(H)
+
+            if H_inv is not None:
+                for tid, pts_world in foot_trails_world.items():
+                    if len(pts_world) < 2:
+                        continue
+
+                    # project world to current image
+                    pts_world_np = np.array(pts_world, np.float32).reshape(-1, 1, 2)
+                    pts_img = cv2.perspectiveTransform(pts_world_np, H_inv).reshape(-1, 2)
+
+                    base_col = COLOUR.get(track_team.get(tid, 0), (255, 255, 255))
+                    n = len(pts_img)
+
+                    # draw fading polyline
+                    for i in range(1, n):
+                        a = i / n  # older segments fainter
+                        col = (int(base_col[0]*a), int(base_col[1]*a), int(base_col[2]*a))
+
+                        x1, y1 = np.rint(pts_img[i-1]).astype(int)
+                        x2, y2 = np.rint(pts_img[i]).astype(int)
+
+                        # clamp to frame to avoid OpenCV errors
+                        x1 = max(0, min(x1, width-1)); y1 = max(0, min(y1, height-1))
+                        x2 = max(0, min(x2, width-1)); y2 = max(0, min(y2, height-1))
+
+                        cv2.line(trail_overlay, (x1, y1), (x2, y2), col, 2, lineType=cv2.LINE_AA)
+
+            # single blend after drawing all trails
+            cv2.addWeighted(trail_overlay, 1.0, frame, 1.0, 0, frame)
+
+            # output minimap
+            TRAIL_THICK = 2
+            for tid, pts in pitch_trails_px.items():
+                if len(pts) < 2:
                     continue
-                foot_trails_world[track_id].append((float(x_m), float(y_m)))
-                u, v = metric_to_pitch_px(x_m, y_m)
-                if 0 <= u < PITCH_W_PX and 0 <= v < PITCH_H_PX:
- 
-                    cv2.circle(pitch_draw_bgr,  (u, v), 6, COLOUR[team_id+2], -1)
-                    cv2.circle(pitch_draw_mask, (u, v), 6, 255, -1)
-
-                # store for tail
-                pitch_trails_px[track_id].append((u, v))
-                all_pitch_points.append((u, v))
-                team_pitch_points[team_id].append((u, v))
-
-        for tid, pts in pitch_trails_px.items():
-            if len(pts) < 2:
-                continue
-            team_id = track_team.get(tid, 0)
-            base_col = COLOUR.get(team_id + 2, (200, 200, 200))
-
-            # fading
-            for i in range(1, len(pts)):
-                a = i / len(pts)  # older segments fainter
-                col = (int(base_col[0]*a), int(base_col[1]*a), int(base_col[2]*a))
-
-                cv2.line(pitch_draw_bgr,  pts[i-1], pts[i], col, 2, lineType=cv2.LINE_AA)
-                cv2.line(pitch_draw_mask, pts[i-1], pts[i], 255, 2, lineType=cv2.LINE_AA)
-
-        H_inv = None if H is None else np.linalg.inv(H)
-
-        if H_inv is not None:
-            for tid, pts_world in foot_trails_world.items():
-                if len(pts_world) < 2:
-                    continue
-
-                # project world to current image
-                pts_world_np = np.array(pts_world, np.float32).reshape(-1, 1, 2)
-                pts_img = cv2.perspectiveTransform(pts_world_np, H_inv).reshape(-1, 2)
-
-                base_col = COLOUR.get(track_team.get(tid, 0), (255, 255, 255))
-                n = len(pts_img)
-
-                # draw fading polyline
+                team_id = track_team.get(tid, 0)
+                base_col = COLOUR.get(team_id, (255, 255, 255))
+                n = len(pts)
                 for i in range(1, n):
-                    a = i / n  # older segments fainter
-                    col = (int(base_col[0]*a), int(base_col[1]*a), int(base_col[2]*a))
+                    a = i / n                        # 0..1 (older => lighter)
+                    alpha_val = int(max(1, min(255, round(255 * a))))
+                    cv2.line(minimap_draw_bgr, pts[i-1], pts[i], base_col, TRAIL_THICK, lineType=cv2.LINE_AA)
+                    cv2.line(minimap_alpha,    pts[i-1], pts[i], alpha_val, TRAIL_THICK, lineType=cv2.LINE_AA)
 
-                    x1, y1 = np.rint(pts_img[i-1]).astype(int)
-                    x2, y2 = np.rint(pts_img[i]).astype(int)
+                # draw current dots last, fully opaque, to sit above trails
+                for (u, v, team_id) in current_minimap_dots:
+                    cv2.circle(minimap_draw_bgr, (u, v), 6, COLOUR[team_id], -1, lineType=cv2.LINE_AA)
+                    cv2.circle(minimap_alpha,    (u, v), 6, 255,            -1, lineType=cv2.LINE_AA)
 
-                    # clamp to frame to avoid OpenCV errors
-                    x1 = max(0, min(x1, width-1)); y1 = max(0, min(y1, height-1))
-                    x2 = max(0, min(x2, width-1)); y2 = max(0, min(y2, height-1))
 
-                    cv2.line(trail_overlay, (x1, y1), (x2, y2), col, 2, lineType=cv2.LINE_AA)
+            panel_pos = ((width - PITCH_W_PX) // 2, 0)
+            h, w = pitch_bg.shape[:2]
 
-        # single blend after drawing all trails
-        cv2.addWeighted(trail_overlay, 1.0, frame, 1.0, 0, frame)
+            # Build a single BGRA panel
+            panel_bgr = pitch_bg.copy()
 
-        # output
+            # wherever there are drawn graphics, replace the colors with the drawn colors
+            mask = minimap_alpha > 0
+            panel_bgr[mask] = minimap_draw_bgr[mask]
 
-        # make a BGRA image from the drawing layer using the mask
-        pitch_draw_bgra = cv2.cvtColor(pitch_draw_bgr, cv2.COLOR_BGR2BGRA)
-        pitch_draw_bgra[:, :, 3] = pitch_draw_mask
+            # per-pixel alpha: 0.65 for background, but graphics use their own alpha (up to 255)
+            panel_alpha = np.full((h, w), int(1.0 * 255), dtype=np.uint8)
+            panel_alpha[mask] = minimap_alpha[mask]
 
-        panel_pos = ((width - PITCH_W_PX) // 2, 0)
-
-        # fade only the pitch background
-        overlay_image(frame, pitch_bg, panel_pos, opacity=0.65)
-
-        # paste graphics (dots/trails) at full opacity
-        overlay_image(frame, pitch_draw_bgra, panel_pos, opacity=1.0)
+            # convert to BGRA and overlay once
+            panel_bgra = cv2.cvtColor(panel_bgr, cv2.COLOR_BGR2BGRA)
+            panel_bgra[:, :, 3] = panel_alpha
+            overlay_image(frame, panel_bgra, panel_pos, opacity=1.0)
 
         out.write(frame)
 
